@@ -9,6 +9,7 @@
 #include <sys/time.h>
 #include <string.h>
 #include <dirent.h>
+#include <signal.h>
 
 // int main(int argc, const char** argv)
 // {
@@ -77,18 +78,34 @@ std::string output_dir=".";
 std::uint32_t pid;
 int perf_round = 0;
 int m_gap_ms = 10;
+std::string perf_record_cmd;
+
+void global_stop_signal_handler(int sig, siginfo_t* sinfo, void* ucontext)
+{
+	std::string kill_cmd = "ps -ef|grep -E \"perf record\"|grep perf_record_data_" + std::to_string(pid) + "| grep -v grep|" + "awk '{print $2}' | xargs kill -9 $1";
+	std::cout<<"global_stop_signal_handler do "<<kill_cmd<<std::endl;
+	std::system(kill_cmd.c_str());
+	std::exit(1);
+}
 
 void start_perf_record(int count)
 {
-	std::string perf_record_cmd;
+	struct sigaction sa;
+	sa.sa_sigaction = global_stop_signal_handler;
+	sa.sa_flags = SA_RESTART | SA_SIGINFO;
+	sigemptyset(&sa.sa_mask);
+	if (sigaction(SIGINT | SIGTERM, &sa, NULL) == -1) {
+		std::cout << "fail to set sig handler" << std::endl;
+		return;
+	}
 
 	m_record_output_file_name = "perf_record_data_" + std::to_string(pid) + "_" + format_timepoint() + ".out";
 	remove(m_record_output_file_name.c_str());
 	int duration_seconds = int(std::ceil(count * m_gap_ms * 1.0 / 1000));
-	perf_record_cmd = std::string("perf record -g --call-graph fp -F 100 -p ") + std::to_string(pid) + std::string(" -o ") + output_dir + "/" + m_record_output_file_name + " --switch-output=" + std::to_string(duration_seconds) + "s --switch-max-files=4 ";
+	perf_record_cmd = std::string("perf record -g --call-graph fp -p ") + std::to_string(pid) + std::string(" -F 100 -o ") + output_dir + "/" + m_record_output_file_name + " --switch-output=" + std::to_string(duration_seconds) + "s --switch-max-files=4 ";
 	m_perf_cmd_finish.store(false);
 	// 开启另外一个线程去执行perf 命令 等待执行完成
-	m_perf_record_thread.reset(new std::thread([perf_record_cmd]()
+	m_perf_record_thread.reset(new std::thread([]()
 		{
 			std::cout<< "start "<<perf_round<<" "<<perf_record_cmd<<std::endl;
 			std::system(perf_record_cmd.c_str());
@@ -124,6 +141,8 @@ std::string get_next_perf_output(const std::string& directory, const std::string
 	closedir(pdir);
 	return result;
 }
+
+
 int main(int argc, const char** argv)
 {
 	if (argc != 2)
